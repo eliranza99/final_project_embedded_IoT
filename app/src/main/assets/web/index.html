@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Nicla Gateway – Web Client</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 16px; background: #f5f5f5; }
+        h1 { margin-bottom: 4px; }
+        .card { background: white; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.08); }
+        label { font-weight: bold; }
+        input[type="text"] { padding: 4px 8px; border-radius: 4px; border: 1px solid #ccc; width: 360px; }
+        button { padding: 6px 12px; margin: 4px; border-radius: 4px; border: none; background: #6200ee;
+          color: white; cursor: pointer; }
+        button:disabled { background: #bdbdbd; cursor: default; }
+        #status { font-weight: bold; margin-left: 8px; }
+        #roleBadge { margin-left: 8px; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #eee; }
+        #log { width: 100%; height: 160px; font-family: monospace; }
+        table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+        th, td { border-bottom: 1px solid #ddd; padding: 6px; text-align: left; font-size: 14px; }
+        th { background: #eeeeee; }
+        .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; background: #e0e0e0; }
+        .smallNote { font-size: 13px; color: #444; }
+        .urlText { font-family: monospace; font-size: 12px; color: #333; background: #f3f3f3; padding: 2px 6px; border-radius: 6px; }
+    </style>
+</head>
+<body>
+
+<h1>Nicla Web Client</h1>
+
+<div class="card">
+    <div>
+        <label>WebSocket URL:</label>
+        <input id="wsUrl" type="text" value="" placeholder="ws://PHONE_IP:8090" />
+        <button id="btnConnect">Connect</button>
+        <button id="btnDisconnect" disabled>Disconnect</button>
+        <span id="status">DISCONNECTED</span>
+        <span id="roleBadge">ROLE: -</span>
+    </div>
+    <div class="smallNote">
+        Page served from: <span class="urlText" id="servedFrom"></span>
+    </div>
+</div>
+
+<div class="card">
+    <h3>Recording controls</h3>
+    <p>
+        <button id="btnStartRec" disabled>Start recording (OWNER only)</button>
+        <button id="btnStopRec" disabled>Stop recording (OWNER only)</button>
+    </p>
+    <p>
+        <button id="btnRefreshList" disabled>Refresh recordings list</button>
+    </p>
+    <p class="smallNote">
+        * Multiple browsers can connect. Only the first browser is <b>OWNER</b>.
+    </p>
+</div>
+
+<div class="card">
+    <h3>Incoming messages</h3>
+    <textarea id="log" readonly></textarea>
+</div>
+
+<div class="card">
+    <h3>Recordings</h3>
+    <p class="smallNote">
+        * הרשימה מתעדכנת מהודעת <span class="badge">REC_LIST</span>.
+        <br/>
+        * לניגון יציב ב-VLC במחשב: עדיף להשתמש ב-URL של <span class="badge">/media/audio_compat/&lt;id&gt;</span>
+    </p>
+
+    <table>
+        <thead>
+        <tr>
+            <th>File</th>
+            <th>Date &amp; time</th>
+            <th>Duration</th>
+            <th>Size</th>
+            <th>VLC</th>
+        </tr>
+        </thead>
+        <tbody id="recordingsBody"></tbody>
+    </table>
+</div>
+
+<script>
+    let socket = null;
+    let recordings = [];
+    let myRole = "UNKNOWN";
+
+    const wsUrlEl = document.getElementById('wsUrl');
+    const btnConnect = document.getElementById('btnConnect');
+    const btnDisconnect = document.getElementById('btnDisconnect');
+    const btnStartRec = document.getElementById('btnStartRec');
+    const btnStopRec = document.getElementById('btnStopRec');
+    const btnRefreshList = document.getElementById('btnRefreshList');
+    const statusSpan = document.getElementById('status');
+    const roleBadge = document.getElementById('roleBadge');
+    const logArea = document.getElementById('log');
+    const recordingsBody = document.getElementById('recordingsBody');
+    const servedFrom = document.getElementById('servedFrom');
+
+    function log(msg) {
+      const now = new Date().toISOString().substr(11, 8);
+      logArea.value += `[${now}] ${msg}\n`;
+      logArea.scrollTop = logArea.scrollHeight;
+    }
+
+    function setConnected(connected) {
+      btnConnect.disabled = connected;
+      btnDisconnect.disabled = !connected;
+      btnRefreshList.disabled = !connected;
+
+      const isOwner = connected && (myRole === "OWNER");
+      btnStartRec.disabled = !isOwner;
+      btnStopRec.disabled = !isOwner;
+
+      statusSpan.textContent = connected ? 'CONNECTED' : 'DISCONNECTED';
+      statusSpan.style.color = connected ? 'green' : 'red';
+    }
+
+    function setRole(role) {
+      myRole = role || "UNKNOWN";
+      roleBadge.textContent = `ROLE: ${myRole}`;
+      roleBadge.style.background = (myRole === "OWNER") ? "#c8e6c9" : "#eee";
+      setConnected(socket && socket.readyState === WebSocket.OPEN);
+    }
+
+    function sendWs(msg) {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(msg);
+        log('>> ' + msg);
+      } else {
+        alert('Not connected');
+      }
+    }
+
+    function httpBase() {
+      // אם הדף נטען מהשרת של הטלפון - זה הכי טוב
+      if (location.hostname && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
+        const port = location.port || "8081";
+        return `${location.protocol}//${location.hostname}:${port}`;
+      }
+
+      // אחרת (פתיחה מקומית / localhost) – נבנה לפי ה-WS URL שהמשתמש הכניס
+      try {
+        const u = new URL(wsUrlEl.value.trim()); // ws://PHONE_IP:8090
+        return `http://${u.hostname}:8081`;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function wsUrlDefault() {
+      // אם הדף נטען מהטלפון -> ws://sameHost:8090
+      if (location.hostname && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
+        return `ws://${location.hostname}:8090`;
+      }
+      // אם פתחת מקומית -> אל תנחש localhost, תן למשתמש להקליד IP
+      return "";
+    }
+
+    function copyToClipboard(text) {
+      navigator.clipboard.writeText(text).then(() => {
+        log("Copied URL: " + text);
+      }).catch(err => {
+        log("Clipboard error: " + err);
+        alert("Copy failed. URL:\n" + text);
+      });
+    }
+
+    btnConnect.onclick = function () {
+      const url = wsUrlEl.value.trim();
+      if (!url) { alert('Please enter WebSocket URL (ws://PHONE_IP:8090)'); return; }
+
+      log("Connecting WS -> " + url);
+      socket = new WebSocket(url);
+
+      socket.onopen = function () {
+        log('WS CONNECTED');
+        setRole("UNKNOWN");
+        setConnected(true);
+        sendWs('WEB:HELLO');
+        sendWs('WEB:REQ_RECORDINGS');
+      };
+
+      socket.onclose = function (ev) {
+        log('WS DISCONNECTED code=' + ev.code + ' reason=' + (ev.reason || ''));
+        setRole("UNKNOWN");
+        setConnected(false);
+      };
+
+      socket.onerror = function () {
+        log('WS ERROR (check URL / network / port)');
+      };
+
+      socket.onmessage = function (event) {
+        const data = String(event.data || '');
+        log('<< ' + data);
+
+        if (data.startsWith("ROLE:")) {
+          setRole(data.substring("ROLE:".length).trim());
+          return;
+        }
+
+        if (data.startsWith('REC_LIST:')) {
+          const jsonPart = data.substring('REC_LIST:'.length);
+          try {
+            const arr = JSON.parse(jsonPart);
+            if (Array.isArray(arr)) {
+              recordings = arr;
+              renderRecordings();
+            }
+          } catch (e) {
+            log('Failed to parse REC_LIST JSON: ' + e);
+          }
+          return;
+        }
+      };
+    };
+
+    btnDisconnect.onclick = function () {
+      if (socket) { socket.close(); socket = null; }
+      setRole("UNKNOWN");
+      setConnected(false);
+    };
+
+    btnStartRec.onclick = function () { sendWs('WEB:CMD_START_REC'); };
+    btnStopRec.onclick = function () { sendWs('WEB:CMD_STOP_REC'); };
+    btnRefreshList.onclick = function () { sendWs('WEB:REQ_RECORDINGS'); };
+
+    function formatBytes(bytes) {
+      if (bytes == null) return '-';
+      const b = Number(bytes);
+      if (b < 1024) return b + ' B';
+      const kb = b / 1024;
+      if (kb < 1024) return kb.toFixed(1) + ' KB';
+      const mb = kb / 1024;
+      return mb.toFixed(1) + ' MB';
+    }
+
+    function formatDuration(sec) {
+      if (sec == null) return '-';
+      const s = Math.round(sec);
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return m + ':' + String(r).padStart(2, '0');
+    }
+
+    function renderRecordings() {
+      recordingsBody.innerHTML = '';
+
+      if (!recordings || recordings.length === 0) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 5;
+        td.textContent = 'No recordings yet';
+        tr.appendChild(td);
+        recordingsBody.appendChild(tr);
+        return;
+      }
+
+      const base = httpBase();
+      if (!base) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 5;
+        td.textContent = 'Cannot build HTTP URL. Enter a valid ws://PHONE_IP:8090 first.';
+        tr.appendChild(td);
+        recordingsBody.appendChild(tr);
+        return;
+      }
+
+      recordings.forEach(function (rec) {
+        const tr = document.createElement('tr');
+
+        const tdName = document.createElement('td');
+        tdName.textContent = rec.name || rec.id || '(unknown)';
+        tr.appendChild(tdName);
+
+        const tdTime = document.createElement('td');
+        tdTime.textContent = rec.timestamp ? new Date(rec.timestamp).toLocaleString() : '-';
+        tr.appendChild(tdTime);
+
+        const tdDur = document.createElement('td');
+        tdDur.textContent = formatDuration(rec.durationSec);
+        tr.appendChild(tdDur);
+
+        const tdSize = document.createElement('td');
+        tdSize.textContent = formatBytes(rec.sizeBytes);
+        tr.appendChild(tdSize);
+
+        const tdActions = document.createElement('td');
+
+        // ✅ הכי חשוב: compat endpoint (PCM16)
+        const recKey = encodeURIComponent(rec.id || rec.name || "");
+        const mediaUrl = `${httpBase()}/media/audio/${recKey}`;
+
+
+
+        const btnCopy = document.createElement('button');
+        btnCopy.textContent = 'Copy Media URL';
+        btnCopy.onclick = function () { copyToClipboard(mediaUrl); };
+        tdActions.appendChild(btnCopy);
+
+        const span = document.createElement('span');
+        span.className = 'urlText';
+        span.style.marginLeft = '8px';
+        span.textContent = mediaUrl;
+        tdActions.appendChild(span);
+
+        tr.appendChild(tdActions);
+        recordingsBody.appendChild(tr);
+      });
+    }
+
+    servedFrom.textContent = location.href;
+    wsUrlEl.value = wsUrlDefault();   // ✅ לא נופל על localhost כשפותחים מקומית
+    setRole("UNKNOWN");
+    setConnected(false);
+    renderRecordings();
+</script>
+
+</body>
+</html>
