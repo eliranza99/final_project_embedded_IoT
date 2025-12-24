@@ -46,6 +46,11 @@ object WebSocketServerManager {
         server?.broadcast(message)
     }
 
+    // ✅ חדש: שידור אודיו בינארי ל-Web (PCM16LE chunks)
+    fun broadcastAudio(pcm16le: ByteArray) {
+        server?.broadcast(pcm16le)
+    }
+
     private class SimpleWsServer(address: InetSocketAddress) : WebSocketServer(address) {
 
         override fun onOpen(conn: WebSocket, handshake: ClientHandshake) {
@@ -140,7 +145,6 @@ object WebSocketServerManager {
                     return
                 }
 
-                // אם תרצה גם Delete/Streaming רק ל-OWNER – נשאיר כאן כבר תבנית:
                 message.startsWith("WEB:DELETE_RECORDING:") -> {
                     if (!isOwner(conn)) {
                         conn.send("MSG: NOT_OWNER (view-only)")
@@ -152,7 +156,6 @@ object WebSocketServerManager {
                 }
 
                 else -> {
-                    // דיבוג / echo
                     conn.send("ECHO:$message")
                 }
             }
@@ -167,7 +170,6 @@ object WebSocketServerManager {
         }
 
         private fun assignRole(conn: WebSocket): String {
-            // אם אין OWNER — הקליינט הזה נהיה OWNER
             if (ownerConn == null) {
                 ownerConn = conn
                 roles[conn] = "OWNER"
@@ -180,8 +182,6 @@ object WebSocketServerManager {
         private fun isOwner(conn: WebSocket): Boolean = (conn == ownerConn)
 
         private fun pickNextOwner(): WebSocket? {
-            // connections הוא Set<WebSocket> של השרת.
-            // ניקח "ראשון" קיים (לא מובטח סדר, אבל עובד טוב מספיק ל-Stage A)
             val it = connections.iterator()
             while (it.hasNext()) {
                 val c = it.next()

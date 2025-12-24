@@ -6,6 +6,9 @@ object NetworkConfigState {
     var localUdpPort: Int = 5000
         private set
 
+    var audioRtpPort: Int = 5004
+        private set
+
     var webSocketPort: Int = 8090
         private set
 
@@ -13,7 +16,6 @@ object NetworkConfigState {
         private set
 
     // ======= Phone IP (Gateway IP) =======
-    // This is the IP that browsers/VLC should use to reach the phone.
     var deviceIp: String = ""
         private set
 
@@ -26,6 +28,8 @@ object NetworkConfigState {
 
     // ======= Updates =======
     fun updateLocalUdpPort(port: Int) { localUdpPort = port }
+    fun updateAudioRtpPort(port: Int) { audioRtpPort = port }
+
     fun updateWebSocketPort(port: Int) { webSocketPort = port }
     fun updateHttpPort(port: Int) { httpPort = port }
 
@@ -36,7 +40,6 @@ object NetworkConfigState {
         remoteUdpPort = port
     }
 
-    // Convenience (optional)
     fun httpBaseOrEmpty(): String =
         if (deviceIp.isBlank()) "" else "http://$deviceIp:$httpPort"
 }

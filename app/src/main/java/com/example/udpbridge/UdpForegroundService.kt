@@ -28,11 +28,16 @@ class UdpForegroundService : Service() {
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var socket: DatagramSocket? = null
 
-    private var udpPort: Int = 5000
+    // ===== Ports =====
+    private var udpPort: Int = 5000               // existing text/file protocol
+    private var audioRtpPort: Int = 5004          // NEW: RTP audio in
     private var webSocketPort: Int = 8080
     private var httpPort: Int = 8081
+
+    // ===== Sockets =====
+    private var socketText: DatagramSocket? = null
+    private var socketAudio: DatagramSocket? = null
 
     private val messageChannel = Channel<String>(capacity = Channel.BUFFERED)
 
@@ -48,7 +53,6 @@ class UdpForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-
         AudioPlaybackManager.init(applicationContext)
         startAsForeground()
         startMessageProcessor()
@@ -59,10 +63,19 @@ class UdpForegroundService : Service() {
         val newWsPort = intent?.getIntExtra(EXTRA_WS_PORT, webSocketPort) ?: webSocketPort
         val newHttpPort = intent?.getIntExtra(EXTRA_HTTP_PORT, httpPort) ?: httpPort
 
-        if (socket == null || newUdpPort != udpPort) {
+        // keep our ports in sync with config (audio port is from state)
+        audioRtpPort = NetworkConfigState.audioRtpPort
+
+        // Text socket (5000)
+        if (socketText == null || newUdpPort != udpPort) {
             udpPort = newUdpPort
-            socket?.close()
-            startUdpListening()
+            socketText?.close()
+            startUdpTextListening()
+        }
+
+        // Audio RTP socket (5004)
+        if (socketAudio == null) {
+            startUdpAudioListening()
         }
 
         webSocketPort = newWsPort
@@ -76,12 +89,15 @@ class UdpForegroundService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        try { socket?.close() } catch (_: Exception) {}
+        try { socketText?.close() } catch (_: Exception) {}
+        try { socketAudio?.close() } catch (_: Exception) {}
 
         incomingFiles.values.forEach { st ->
             try { st.fos.close() } catch (_: Exception) {}
         }
         incomingFiles.clear()
+
+        AudioStreamPlayer.stop()
 
         scope.cancel()
         messageChannel.close()
@@ -105,7 +121,7 @@ class UdpForegroundService : Service() {
 
         val notification: Notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("UDP Gateway running")
-            .setContentText("UDP:$udpPort  WS:$webSocketPort  HTTP:$httpPort")
+            .setContentText("UDP:$udpPort  RTP:$audioRtpPort  WS:$webSocketPort  HTTP:$httpPort")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .build()
@@ -113,24 +129,26 @@ class UdpForegroundService : Service() {
         startForeground(1, notification)
     }
 
-    private fun startUdpListening() {
+    // ======================
+    // TEXT / FILE UDP (existing)
+    // ======================
+    private fun startUdpTextListening() {
         scope.launch {
             try {
-                socket = DatagramSocket(udpPort).apply {
+                socketText = DatagramSocket(udpPort).apply {
                     receiveBufferSize = 2 * 1024 * 1024
                 }
-
                 val buffer = ByteArray(8192)
-                Log.d(TAG, "Listening on UDP port $udpPort")
+                Log.d(TAG, "Listening TEXT on UDP port $udpPort")
 
                 while (isActive) {
                     val packet = DatagramPacket(buffer, buffer.size)
-                    socket?.receive(packet)
+                    socketText?.receive(packet)
                     val text = String(packet.data, 0, packet.length, Charsets.UTF_8)
                     messageChannel.trySend(text)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error in UDP listener", e)
+                Log.e(TAG, "Error in TEXT UDP listener", e)
             }
         }
     }
@@ -230,7 +248,6 @@ class UdpForegroundService : Service() {
                     val file = st.outFile
                     val recInfo = RecordingRepository.addRecordingFromFile(file)
 
-                    // ✅ חשוב: נשמור באפליקציה מה ההקלטה האחרונה שהתקבלה כדי לפתוח VLC
                     UdpSharedState.updateLastReceivedFile(file.absolutePath)
                     UdpSharedState.updateLastReceivedRecordingKey(recInfo.id)
 
@@ -240,6 +257,49 @@ class UdpForegroundService : Service() {
                 } catch (e: Exception) {
                     Log.e(TAG, "Error finalizing file '$name'", e)
                 }
+            }
+        }
+    }
+
+    // ======================
+    // RTP AUDIO UDP (NEW)
+    // ======================
+    private fun startUdpAudioListening() {
+        scope.launch {
+            try {
+                socketAudio = DatagramSocket(audioRtpPort).apply {
+                    receiveBufferSize = 4 * 1024 * 1024
+                }
+                val buffer = ByteArray(2048) // RTP header + payload (1024 samples * 2 bytes = 2048)
+                Log.d(TAG, "Listening AUDIO RTP on UDP port $audioRtpPort")
+
+                while (isActive) {
+                    val packet = DatagramPacket(buffer, buffer.size)
+                    socketAudio?.receive(packet)
+
+                    // RTP minimal header is 12 bytes
+                    if (packet.length <= 12) continue
+
+                    // payload = after 12 bytes (we assume no CSRC/ext for this stage)
+                    val payloadLen = packet.length - 12
+                    val payload = packet.data
+
+                    // Convert big-endian PCM16 to little-endian for AudioTrack
+                    val pcmLe = ByteArray(payloadLen)
+                    var i = 0
+                    while (i < payloadLen) {
+                        val beHi = payload[12 + i]
+                        val beLo = payload[12 + i + 1]
+                        pcmLe[i] = beLo
+                        pcmLe[i + 1] = beHi
+                        i += 2
+                    }
+
+                    AudioStreamPlayer.startIfNeeded()
+                    AudioStreamPlayer.writePcmLE(pcmLe, pcmLe.size)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in AUDIO RTP listener", e)
             }
         }
     }
