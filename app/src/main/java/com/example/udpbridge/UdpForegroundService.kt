@@ -31,7 +31,7 @@ class UdpForegroundService : Service() {
 
     // ===== Ports =====
     private var udpPort: Int = 5000               // existing text/file protocol
-    private var audioRtpPort: Int = 5004          // NEW: RTP audio in
+    private var audioRtpPort: Int = 5004          // RTP audio in
     private var webSocketPort: Int = 8080
     private var httpPort: Int = 8081
 
@@ -98,6 +98,9 @@ class UdpForegroundService : Service() {
         incomingFiles.clear()
 
         AudioStreamPlayer.stop()
+
+        // ✅ close live buffer streams
+        LivePcmRingBuffer.closeAll()
 
         scope.cancel()
         messageChannel.close()
@@ -270,7 +273,7 @@ class UdpForegroundService : Service() {
                 socketAudio = DatagramSocket(audioRtpPort).apply {
                     receiveBufferSize = 4 * 1024 * 1024
                 }
-                val buffer = ByteArray(2048) // RTP header + payload (1024 samples * 2 bytes = 2048)
+                val buffer = ByteArray(2048) // RTP header + payload
                 Log.d(TAG, "Listening AUDIO RTP on UDP port $audioRtpPort")
 
                 while (isActive) {
@@ -284,7 +287,7 @@ class UdpForegroundService : Service() {
                     val payloadLen = packet.length - 12
                     val payload = packet.data
 
-                    // Convert big-endian PCM16 to little-endian for AudioTrack
+                    // Convert big-endian PCM16 to little-endian
                     val pcmLe = ByteArray(payloadLen)
                     var i = 0
                     while (i < payloadLen) {
@@ -295,6 +298,10 @@ class UdpForegroundService : Service() {
                         i += 2
                     }
 
+                    // ✅ feed LIVE buffer for HTTP/VLC
+                    LivePcmRingBuffer.write(pcmLe, pcmLe.size)
+
+                    // keep local playback
                     AudioStreamPlayer.startIfNeeded()
                     AudioStreamPlayer.writePcmLE(pcmLe, pcmLe.size)
                 }

@@ -15,6 +15,17 @@ object NetworkConfigState {
     var httpPort: Int = 8081
         private set
 
+    // ======= LIVE audio format (must match your sender) =======
+    // If your sender is 48000Hz, change audioSampleRateHz to 48000.
+    var audioSampleRateHz: Int = 44100
+        private set
+
+    var audioChannels: Int = 1
+        private set
+
+    var audioBitDepth: Int = 16
+        private set
+
     // ======= Phone IP (Gateway IP) =======
     var deviceIp: String = ""
         private set

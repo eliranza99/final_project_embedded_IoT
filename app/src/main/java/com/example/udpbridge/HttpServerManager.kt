@@ -5,6 +5,8 @@ import fi.iki.elonen.NanoHTTPD
 import org.json.JSONObject
 import java.io.*
 import java.net.URLDecoder
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.Locale
 import kotlin.math.min
 
@@ -54,6 +56,26 @@ object HttpServerManager {
             }
 
             // =======================
+            // ✅ LIVE WAV for VLC: GET /live.wav
+            // =======================
+            if (method == "GET" && uri == "/live.wav") {
+                // NOTE: match your sender sample-rate. Default here: 44100 mono PCM16
+                val sampleRate = NetworkConfigState.audioSampleRateHz
+                val channels = NetworkConfigState.audioChannels
+                val bits = NetworkConfigState.audioBitDepth
+
+                val header = wavStreamingHeader(sampleRate, channels, bits)
+                val headerIn = ByteArrayInputStream(header)
+                val pcmStream = LivePcmRingBuffer.openStream(startLive = true)
+                val stream = SequenceInputStream(headerIn, pcmStream)
+
+                return newChunkedResponse(Response.Status.OK, "audio/wav", stream).also { res ->
+                    res.addHeader("Cache-Control", "no-store")
+                    addCors(res)
+                }
+            }
+
+            // =======================
             // GET /config.json
             // =======================
             if (method == "GET" && uri == "/config.json") {
@@ -64,11 +86,11 @@ object HttpServerManager {
                 obj.put("httpBase", "http://${NetworkConfigState.deviceIp}:${NetworkConfigState.httpPort}")
 
                 val audio = JSONObject()
-                audio.put("container", "WAV")
+                audio.put("container", "WAV (live)")
                 audio.put("codec", "PCM")
-                audio.put("channels", 1)
-                audio.put("sampleRateHz", 48000)
-                audio.put("bitDepth", 24)
+                audio.put("channels", NetworkConfigState.audioChannels)
+                audio.put("sampleRateHz", NetworkConfigState.audioSampleRateHz)
+                audio.put("bitDepth", NetworkConfigState.audioBitDepth)
                 obj.put("audioFormat", audio)
 
                 return newFixedLengthResponse(
@@ -92,7 +114,7 @@ object HttpServerManager {
             }
 
             // =======================
-            // ✅ VLC playlist: /vlc/audio/<key>.m3u -> points to ORIGINAL WAV (NO compat)
+            // VLC playlist for saved recordings
             // =======================
             if (method == "GET" && uri.startsWith("/vlc/audio/") && uri.endsWith(".m3u")) {
                 val key = decodeKey(uri.removePrefix("/vlc/audio/").removeSuffix(".m3u"))
@@ -142,12 +164,41 @@ object HttpServerManager {
                 - /              (web UI)
                 - /config.json
                 - /api/recordings
+                - /live.wav       (LIVE WAV for VLC)
                 - /media/audio/<id>
                 - /vlc/audio/<id>.m3u
             """.trimIndent()
 
             return newFixedLengthResponse(Response.Status.OK, "text/plain; charset=utf-8", info)
                 .also { addCors(it) }
+        }
+
+        private fun wavStreamingHeader(sampleRate: Int, channels: Int, bitsPerSample: Int): ByteArray {
+            val byteRate = sampleRate * channels * (bitsPerSample / 8)
+            val blockAlign = channels * (bitsPerSample / 8)
+
+            // Streaming WAV: unknown sizes -> put 0xFFFFFFFF placeholders (VLC is ok with it)
+            val riffSize = 0xFFFFFFFF.toInt()
+            val dataSize = 0xFFFFFFFF.toInt()
+
+            val bb = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+            bb.put("RIFF".toByteArray(Charsets.US_ASCII))
+            bb.putInt(riffSize)
+            bb.put("WAVE".toByteArray(Charsets.US_ASCII))
+
+            bb.put("fmt ".toByteArray(Charsets.US_ASCII))
+            bb.putInt(16) // PCM fmt chunk size
+            bb.putShort(1) // AudioFormat=1 (PCM)
+            bb.putShort(channels.toShort())
+            bb.putInt(sampleRate)
+            bb.putInt(byteRate)
+            bb.putShort(blockAlign.toShort())
+            bb.putShort(bitsPerSample.toShort())
+
+            bb.put("data".toByteArray(Charsets.US_ASCII))
+            bb.putInt(dataSize)
+
+            return bb.array()
         }
 
         private fun serveAssetText(assetPath: String, mime: String): Response {
@@ -190,7 +241,6 @@ object HttpServerManager {
             val fileLen = file.length()
             val rangeHeader = session.headers["range"] ?: session.headers["Range"]
 
-            // No range -> normal 200
             if (rangeHeader.isNullOrBlank() || !rangeHeader.lowercase(Locale.US).startsWith("bytes=")) {
                 val fis = FileInputStream(file)
                 return newFixedLengthResponse(Response.Status.OK, "audio/wav", fis, fileLen).also { res ->
@@ -200,7 +250,6 @@ object HttpServerManager {
                 }
             }
 
-            // Range parse: bytes=start-end
             val range = rangeHeader.substringAfter("bytes=", "")
             val parts = range.split("-", limit = 2)
             val start = parts.getOrNull(0)?.trim()?.toLongOrNull() ?: 0L
