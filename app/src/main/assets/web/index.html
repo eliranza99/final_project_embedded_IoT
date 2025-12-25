@@ -22,6 +22,7 @@
         .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; background: #e0e0e0; }
         .smallNote { font-size: 13px; color: #444; }
         .urlText { font-family: monospace; font-size: 12px; color: #333; background: #f3f3f3; padding: 2px 6px; border-radius: 6px; }
+        audio { width: 100%; margin-top: 8px; }
     </style>
 </head>
 <body>
@@ -40,6 +41,29 @@
     <div class="smallNote">
         Page served from: <span class="urlText" id="servedFrom"></span>
     </div>
+</div>
+
+<!-- ✅ NEW: Live Audio Card -->
+<div class="card">
+    <h3>Live Audio (LAN)</h3>
+    <p class="smallNote">
+        This plays the live stream from <span class="badge">/live.wav</span>.
+        <br/>
+        Works for multiple clients on the same network. You can also copy the same URL and open it in VLC.
+    </p>
+
+    <div>
+        <button id="btnLiveStart">Play Live</button>
+        <button id="btnLiveStop" disabled>Stop</button>
+        <button id="btnCopyLiveUrl">Copy VLC URL</button>
+        <span class="urlText" id="liveUrlText"></span>
+    </div>
+
+    <audio id="liveAudio" controls></audio>
+
+    <p class="smallNote">
+        If you opened this page locally (file://), make sure WS URL is set (ws://PHONE_IP:8090) so we can derive PHONE_IP.
+    </p>
 </div>
 
 <div class="card">
@@ -66,7 +90,7 @@
     <p class="smallNote">
         * הרשימה מתעדכנת מהודעת <span class="badge">REC_LIST</span>.
         <br/>
-        * לניגון יציב ב-VLC במחשב: עדיף להשתמש ב-URL של <span class="badge">/media/audio_compat/&lt;id&gt;</span>
+        * לניגון יציב ב-VLC במחשב: עדיף להשתמש ב-URL של <span class="badge">/media/audio/&lt;id&gt;</span>
     </p>
 
     <table>
@@ -99,6 +123,13 @@
     const logArea = document.getElementById('log');
     const recordingsBody = document.getElementById('recordingsBody');
     const servedFrom = document.getElementById('servedFrom');
+
+    // Live audio UI
+    const btnLiveStart = document.getElementById('btnLiveStart');
+    const btnLiveStop = document.getElementById('btnLiveStop');
+    const btnCopyLiveUrl = document.getElementById('btnCopyLiveUrl');
+    const liveAudio = document.getElementById('liveAudio');
+    const liveUrlText = document.getElementById('liveUrlText');
 
     function log(msg) {
       const now = new Date().toISOString().substr(11, 8);
@@ -136,13 +167,12 @@
     }
 
     function httpBase() {
-      // אם הדף נטען מהשרת של הטלפון - זה הכי טוב
+      // If page is served from phone gateway - best
       if (location.hostname && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
         const port = location.port || "8081";
         return `${location.protocol}//${location.hostname}:${port}`;
       }
-
-      // אחרת (פתיחה מקומית / localhost) – נבנה לפי ה-WS URL שהמשתמש הכניס
+      // Opened locally -> derive from WS URL
       try {
         const u = new URL(wsUrlEl.value.trim()); // ws://PHONE_IP:8090
         return `http://${u.hostname}:8081`;
@@ -152,11 +182,9 @@
     }
 
     function wsUrlDefault() {
-      // אם הדף נטען מהטלפון -> ws://sameHost:8090
       if (location.hostname && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
         return `ws://${location.hostname}:8090`;
       }
-      // אם פתחת מקומית -> אל תנחש localhost, תן למשתמש להקליד IP
       return "";
     }
 
@@ -169,6 +197,42 @@
       });
     }
 
+    function updateLiveUrlUi() {
+      const base = httpBase();
+      const liveUrl = base ? `${base}/live.wav` : "";
+      liveUrlText.textContent = liveUrl || "(set WS URL first)";
+      btnCopyLiveUrl.disabled = !liveUrl;
+      btnLiveStart.disabled = !liveUrl;
+      return liveUrl;
+    }
+
+    function startLive() {
+      const liveUrl = updateLiveUrlUi();
+      if (!liveUrl) { alert("Cannot build live URL. Enter WS URL first."); return; }
+
+      // Reset audio element to force reconnect
+      liveAudio.pause();
+      liveAudio.src = liveUrl + `?t=${Date.now()}`; // bypass caches
+      liveAudio.play().then(() => {
+        log("Live audio playing: " + liveAudio.src);
+        btnLiveStart.disabled = true;
+        btnLiveStop.disabled = false;
+      }).catch(err => {
+        log("Live play error: " + err);
+        alert("Live audio failed. Check network, /live.wav, and that audio is being streamed.");
+      });
+    }
+
+    function stopLive() {
+      liveAudio.pause();
+      liveAudio.removeAttribute('src');
+      liveAudio.load();
+      btnLiveStart.disabled = false;
+      btnLiveStop.disabled = true;
+      log("Live audio stopped");
+    }
+
+    // WS connect
     btnConnect.onclick = function () {
       const url = wsUrlEl.value.trim();
       if (!url) { alert('Please enter WebSocket URL (ws://PHONE_IP:8090)'); return; }
@@ -182,6 +246,7 @@
         setConnected(true);
         sendWs('WEB:HELLO');
         sendWs('WEB:REQ_RECORDINGS');
+        updateLiveUrlUi();
       };
 
       socket.onclose = function (ev) {
@@ -223,11 +288,23 @@
       if (socket) { socket.close(); socket = null; }
       setRole("UNKNOWN");
       setConnected(false);
+      stopLive();
     };
 
     btnStartRec.onclick = function () { sendWs('WEB:CMD_START_REC'); };
     btnStopRec.onclick = function () { sendWs('WEB:CMD_STOP_REC'); };
     btnRefreshList.onclick = function () { sendWs('WEB:REQ_RECORDINGS'); };
+
+    btnLiveStart.onclick = startLive;
+    btnLiveStop.onclick = stopLive;
+    btnCopyLiveUrl.onclick = function () {
+      const liveUrl = updateLiveUrlUi();
+      if (liveUrl) copyToClipboard(liveUrl);
+    };
+
+    wsUrlEl.addEventListener('input', function () {
+      updateLiveUrlUi();
+    });
 
     function formatBytes(bytes) {
       if (bytes == null) return '-';
@@ -292,11 +369,8 @@
 
         const tdActions = document.createElement('td');
 
-        // ✅ הכי חשוב: compat endpoint (PCM16)
         const recKey = encodeURIComponent(rec.id || rec.name || "");
         const mediaUrl = `${httpBase()}/media/audio/${recKey}`;
-
-
 
         const btnCopy = document.createElement('button');
         btnCopy.textContent = 'Copy Media URL';
@@ -315,9 +389,10 @@
     }
 
     servedFrom.textContent = location.href;
-    wsUrlEl.value = wsUrlDefault();   // ✅ לא נופל על localhost כשפותחים מקומית
+    wsUrlEl.value = wsUrlDefault();
     setRole("UNKNOWN");
     setConnected(false);
+    updateLiveUrlUi();
     renderRecordings();
 </script>
 
