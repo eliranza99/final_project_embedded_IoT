@@ -1,25 +1,40 @@
 package com.example.udpbridge
 
+import android.Manifest
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
 class MainActivity : ComponentActivity() {
 
+    // מנהל בקשות ההרשאה - פותר את השגיאה מצילום המסך
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val allGranted = permissions.values.all { it }
+        if (!allGranted) {
+            Toast.makeText(this, "Permissions are required for BLE and Streaming", Toast.LENGTH_LONG).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // ✅ חשוב: מאפשר ל-HttpServerManager לגשת ל-assets
+        // הפעלת בדיקת ההרשאות מיד עם פתיחת האפליקציה
+        checkAndRequestPermissions()
+
+        // מאפשר ל-HttpServerManager לגשת ל-assets
         AppContextHolder.init(applicationContext)
 
         val deviceIp = getDeviceIpAddress() ?: "Unknown"
 
-        // ✅ קריטי: עכשיו HttpServerManager/VLC משתמשים בזה
         if (deviceIp != "Unknown") {
             NetworkConfigState.updateDeviceIp(deviceIp)
         }
@@ -45,6 +60,35 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    /**
+     * פונקציה לריכוז ובקשת כל ההרשאות הנדרשות
+     */
+    private fun checkAndRequestPermissions() {
+        val permissions = mutableListOf<String>()
+
+        // טיפול בשגיאת המיקום: חובה לבקש FINE ו-COARSE יחד
+        permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+
+        // הרשאות בלוטוס לאנדרואיד 12 ומעלה
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+
+        // הרשאה להתראות (נדרש עבור ה-Foreground Service באנדרואיד 13+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        // הרשאה ספציפית לסנכרון נתונים ברקע עבור אנדרואיד 14
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            permissions.add(Manifest.permission.FOREGROUND_SERVICE_DATA_SYNC)
+        }
+
+        requestPermissionLauncher.launch(permissions.toTypedArray())
     }
 
     private fun startUdpService(udpPort: Int, webSocketPort: Int, httpPort: Int) {
