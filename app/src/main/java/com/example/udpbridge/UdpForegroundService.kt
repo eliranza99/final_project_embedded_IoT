@@ -29,13 +29,11 @@ class UdpForegroundService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // ===== Ports =====
     private var udpPort: Int = 5000
     private var audioRtpPort: Int = 5004
     private var webSocketPort: Int = 8080
     private var httpPort: Int = 8081
 
-    // ===== Sockets =====
     private var socketText: DatagramSocket? = null
     private var socketAudio: DatagramSocket? = null
 
@@ -59,28 +57,18 @@ class UdpForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val newUdpPort = intent?.getIntExtra(EXTRA_UDP_PORT, udpPort) ?: udpPort
-        val newWsPort = intent?.getIntExtra(EXTRA_WS_PORT, webSocketPort) ?: webSocketPort
-        val newHttpPort = intent?.getIntExtra(EXTRA_HTTP_PORT, httpPort) ?: httpPort
-
+        udpPort = intent?.getIntExtra(EXTRA_UDP_PORT, udpPort) ?: udpPort
+        webSocketPort = intent?.getIntExtra(EXTRA_WS_PORT, webSocketPort) ?: webSocketPort
+        httpPort = intent?.getIntExtra(EXTRA_HTTP_PORT, httpPort) ?: httpPort
         audioRtpPort = NetworkConfigState.audioRtpPort
 
-        if (socketText == null || newUdpPort != udpPort) {
-            udpPort = newUdpPort
-            socketText?.close()
-            startUdpTextListening()
-        }
-
-        if (socketAudio == null) {
-            startUdpAudioListening()
-        }
-
-        webSocketPort = newWsPort
-        httpPort = newHttpPort
+        if (socketText == null) startUdpTextListening()
+        if (socketAudio == null) startUdpAudioListening()
 
         WebSocketServerManager.startServer(webSocketPort)
         HttpServerManager.start(httpPort, filesDir)
 
+        Log.d(TAG, "Service Started: UDP:$udpPort, WS:$webSocketPort, HTTP:$httpPort")
         return START_STICKY
     }
 
@@ -89,15 +77,14 @@ class UdpForegroundService : Service() {
         try { socketText?.close() } catch (_: Exception) {}
         try { socketAudio?.close() } catch (_: Exception) {}
 
-        incomingFiles.values.forEach { st ->
-            try { st.fos.close() } catch (_: Exception) {}
+        incomingFiles.values.forEach {
+            try { it.fos.flush(); it.fos.close() } catch (_: Exception) {}
         }
         incomingFiles.clear()
 
         AudioStreamPlayer.stop()
         LivePcmRingBuffer.closeAll()
         scope.cancel()
-        messageChannel.close()
 
         WebSocketServerManager.stopServer()
         HttpServerManager.stop()
@@ -107,46 +94,30 @@ class UdpForegroundService : Service() {
 
     private fun startAsForeground() {
         val channelId = "udp_gateway_channel"
-        val channelName = "UDP Gateway"
-        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(
-                NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_LOW)
-            )
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            nm.createNotificationChannel(NotificationChannel(channelId, "Gateway", NotificationManager.IMPORTANCE_LOW))
         }
-
-        val notification: Notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("UDP Gateway running")
-            .setContentText("UDP:$udpPort  Audio:$audioRtpPort  WS:$webSocketPort")
-            .setSmallIcon(R.mipmap.ic_launcher)
+        val notification = NotificationCompat.Builder(this, channelId)
+            .setContentTitle("IoT Gateway Active")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setOngoing(true)
             .build()
-
         startForeground(1, notification)
     }
 
-    // ======================
-    // TEXT / COMMAND UDP (Clean ASCII - No Secret Key)
-    // ======================
     private fun startUdpTextListening() {
         scope.launch {
             try {
-                socketText = DatagramSocket(udpPort).apply {
-                    receiveBufferSize = 2 * 1024 * 1024
-                }
+                socketText = DatagramSocket(udpPort).apply { receiveBufferSize = 1024 * 1024 }
                 val buffer = ByteArray(8192)
-                Log.d(TAG, "Listening TEXT on UDP port $udpPort")
-
                 while (isActive) {
                     val packet = DatagramPacket(buffer, buffer.size)
                     socketText?.receive(packet)
-                    val text = String(packet.data, 0, packet.length, Charsets.UTF_8)
+                    val text = String(packet.data, 0, packet.length, Charsets.UTF_8).trim()
                     messageChannel.trySend(text)
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in TEXT UDP listener", e)
-            }
+            } catch (e: Exception) { Log.e(TAG, "UDP Text Error", e) }
         }
     }
 
@@ -160,145 +131,92 @@ class UdpForegroundService : Service() {
         val payload = msg.trim()
         if (payload.isEmpty()) return
 
-        // הוספת לוג לניפוי שגיאות
-        Log.d(TAG, "Processing payload: $payload")
-
         if (payload.startsWith("FILE_")) {
             handleFilePayload(payload)
             return
         }
 
-        // בדיקה אם מדובר בסיגנל SOS בפורמט ASCII (!)
-        if (payload == "!") {
-            handleSosDetected()
+        when (payload) {
+            "!", "SOS_ACTIVE" -> {
+                UdpSharedState.update("EMERGENCY: SOS RECEIVED")
+                WebSocketServerManager.broadcast("ALARM:SOS_ACTIVE")
+            }
+            "CANCEL_SOS", "SOS_CANCELLED" -> {
+                UdpSharedState.update("NORMAL: SOS CLEARED")
+                WebSocketServerManager.broadcast("ALARM:SOS_OFF")
+            }
+            else -> {
+                UdpSharedState.update(payload)
+            }
         }
-
-        UdpSharedState.update(payload)
         WebSocketServerManager.broadcast("UDP_TEXT:$payload")
     }
 
     private fun handleFilePayload(payload: String) {
-        when {
-            payload.startsWith("FILE_START:") -> {
-                val parts = payload.split(":", limit = 3)
-                if (parts.size < 3) return
-                val name = parts[1].trim()
-                val totalChunks = parts[2].toIntOrNull() ?: return
-                if (totalChunks <= 0) return
-
-                try {
-                    val outDir = File(filesDir, "received")
-                    if (!outDir.exists()) outDir.mkdirs()
+        try {
+            when {
+                payload.startsWith("FILE_START:") -> {
+                    val parts = payload.split(":", limit = 3)
+                    val name = parts[1].trim()
+                    val total = parts[2].toInt()
+                    val outDir = File(filesDir, "received").apply { mkdirs() }
                     val outFile = File(outDir, name)
-                    if (outFile.exists()) outFile.delete()
-
-                    val fos = FileOutputStream(outFile, true)
-                    incomingFiles[name] = IncomingFileState(name, totalChunks, 0, outFile, fos)
-                    WebSocketServerManager.broadcast("FILE_START:$name:$totalChunks")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed FILE_START for $name", e)
+                    val fos = FileOutputStream(outFile)
+                    incomingFiles[name] = IncomingFileState(name, total, 0, outFile, fos)
+                    WebSocketServerManager.broadcast("FILE_START:$name")
                 }
-            }
-            payload.startsWith("FILE_CHUNK:") -> {
-                val parts = payload.split(":", limit = 4)
-                if (parts.size < 4) return
-                val name = parts[1].trim()
-                val index = parts[2].toIntOrNull() ?: return
-                val base64Data = parts[3]
-                val st = incomingFiles[name] ?: return
-                try {
-                    val bytes = Base64.decode(base64Data, Base64.DEFAULT)
+                payload.startsWith("FILE_CHUNK:") -> {
+                    val parts = payload.split(":", limit = 4)
+                    val name = parts[1].trim()
+                    val dataBase64 = parts[3]
+                    val st = incomingFiles[name] ?: return
+                    val bytes = Base64.decode(dataBase64, Base64.DEFAULT)
                     st.fos.write(bytes)
                     st.receivedChunks++
-                    WebSocketServerManager.broadcast("FILE_PROGRESS:$name:${st.receivedChunks}/${st.totalChunks}")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error writing chunk $index", e)
                 }
-            }
-            payload.startsWith("FILE_END:") -> {
-                val parts = payload.split(":", limit = 2)
-                if (parts.size < 2) return
-                val name = parts[1].trim()
-                val st = incomingFiles.remove(name) ?: return
-                try {
+                payload.startsWith("FILE_END:") -> {
+                    val name = payload.removePrefix("FILE_END:").trim()
+                    val st = incomingFiles.remove(name) ?: return
                     st.fos.flush()
                     st.fos.close()
                     RecordingRepository.addRecordingFromFile(st.outFile)
                     WebSocketServerManager.broadcast("FILE_END:$name")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error finalizing file", e)
                 }
             }
-        }
+        } catch (e: Exception) { Log.e(TAG, "File handling error", e) }
     }
 
-    // ======================
-    // CUSTOM IoT AUDIO UDP (12-Byte Header Processing)
-    // ======================
     private fun startUdpAudioListening() {
         scope.launch {
             try {
-                socketAudio = DatagramSocket(audioRtpPort).apply {
-                    receiveBufferSize = 4 * 1024 * 1024
-                }
+                socketAudio = DatagramSocket(audioRtpPort).apply { receiveBufferSize = 2 * 1024 * 1024 }
                 val buffer = ByteArray(2048)
-                Log.d(TAG, "Listening CUSTOM IoT AUDIO on port $audioRtpPort")
-
                 while (isActive) {
                     val packet = DatagramPacket(buffer, buffer.size)
                     socketAudio?.receive(packet)
-
-                    // בדיקת גודל מינימלי ל-Header (12 בתים)
-                    if (packet.length <= 12) continue
+                    if (packet.length < 12) continue
 
                     val data = packet.data
+                    // בדיקת Header AA AA
+                    if ((data[0].toInt() and 0xFF) == 0xAA && (data[1].toInt() and 0xFF) == 0xAA) {
 
-                    // 1. אימות Sync Word (0xAAAA)
-                    val sync1 = data[0].toInt() and 0xFF
-                    val sync2 = data[1].toInt() and 0xFF
-                    if (sync1 != 0xAA || sync2 != 0xAA) continue
-
-                    // 2. קריאת Flags (בית מספר 9)
-                    val flags = data[9].toInt() and 0xFF
-                    val isSosSet = (flags and 0x01) != 0       // Bit 0: SOS
-                    val isBigEndian = (flags and 0x02) != 0    // Bit 1: Big-Endian flag
-
-                    // 3. טיפול ב-SOS במידה וזוהה ב-Header
-                    if (isSosSet) {
-                        handleSosDetected()
-                    }
-
-                    // 4. קילוף ה-Header וחילוץ האודיו
-                    val payloadLen = packet.length - 12
-                    val processedPcm = ByteArray(payloadLen)
-
-                    if (isBigEndian) {
-                        // המרה מ-MSB ל-LSB עבור נגן האנדרואיד
-                        var i = 0
-                        while (i < payloadLen - 1) {
-                            processedPcm[i] = data[12 + i + 1]
-                            processedPcm[i + 1] = data[12 + i]
-                            i += 2
+                        // בדיקת דגל SOS בבייט ה-9
+                        val flags = data[9].toInt() and 0xFF
+                        if ((flags and 0x01) != 0) {
+                            handleIncomingMessage("!")
                         }
-                    } else {
-                        // המידע כבר ב-LSB, העתקה ישירה לביצועים אופטימליים
-                        System.arraycopy(data, 12, processedPcm, 0, payloadLen)
+
+                        // חילוץ PCM (החל מבייט 12)
+                        val pcmLen = packet.length - 12
+                        val pcmData = ByteArray(pcmLen)
+                        System.arraycopy(data, 12, pcmData, 0, pcmLen)
+
+                        LivePcmRingBuffer.write(pcmData, pcmLen)
+                        AudioStreamPlayer.startIfNeeded()
+                        AudioStreamPlayer.writePcmLE(pcmData, pcmLen)
                     }
-
-                    // 5. הפצה (Bridging) לשרת ה-Web ולנגן המקומי
-                    LivePcmRingBuffer.write(processedPcm, processedPcm.size)
-                    AudioStreamPlayer.startIfNeeded()
-                    AudioStreamPlayer.writePcmLE(processedPcm, processedPcm.size)
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in Audio Listener", e)
-            }
+            } catch (e: Exception) { Log.e(TAG, "Audio UDP Error", e) }
         }
-    }
-
-    private fun handleSosDetected() {
-        Log.w(TAG, "!!! SOS SIGNAL DETECTED !!!")
-        UdpSharedState.update("EMERGENCY: SOS RECEIVED")
-        WebSocketServerManager.broadcast("ALARM:SOS_ACTIVE")
     }
 }

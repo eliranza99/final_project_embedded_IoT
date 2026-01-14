@@ -1,400 +1,198 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="he" dir="rtl">
 <head>
-    <meta charset="UTF-8" />
-    <title>Nicla Gateway – Web Client</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>לוח בקרה מרחוק - Nicla Control</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 16px; background: #f5f5f5; }
-        h1 { margin-bottom: 4px; }
-        .card { background: white; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;
-          box-shadow: 0 2px 4px rgba(0,0,0,0.08); }
-        label { font-weight: bold; }
-        input[type="text"] { padding: 4px 8px; border-radius: 4px; border: 1px solid #ccc; width: 360px; }
-        button { padding: 6px 12px; margin: 4px; border-radius: 4px; border: none; background: #6200ee;
-          color: white; cursor: pointer; }
-        button:disabled { background: #bdbdbd; cursor: default; }
-        #status { font-weight: bold; margin-left: 8px; }
-        #roleBadge { margin-left: 8px; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #eee; }
-        #log { width: 100%; height: 160px; font-family: monospace; }
-        table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-        th, td { border-bottom: 1px solid #ddd; padding: 6px; text-align: left; font-size: 14px; }
-        th { background: #eeeeee; }
-        .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; background: #e0e0e0; }
-        .smallNote { font-size: 13px; color: #444; }
-        .urlText { font-family: monospace; font-size: 12px; color: #333; background: #f3f3f3; padding: 2px 6px; border-radius: 6px; }
-        audio { width: 100%; margin-top: 8px; }
+        :root {
+            --primary-color: #2196F3;
+            --danger-color: #f44336;
+            --success-color: #4CAF50;
+            --warning-color: #ff9800;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+
+        .container {
+            background: white;
+            padding: 2.5rem;
+            border-radius: 20px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.1);
+            text-align: center;
+            width: 90%;
+            max-width: 550px;
+        }
+
+        h1 { color: #333; margin-bottom: 1.5rem; }
+
+        .controls-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        button {
+            padding: 18px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            color: white;
+        }
+
+        button:active { transform: scale(0.96); }
+
+        .btn-start { background-color: var(--success-color); }
+        .btn-stop { background-color: var(--danger-color); }
+        .btn-action { background-color: var(--primary-color); }
+        .btn-wide { grid-column: span 2; background-color: #673AB7; }
+
+        /* SOS Overlay */
+        #sos-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background-color: rgba(244, 67, 54, 0.98);
+            color: white;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            animation: blinker 1s linear infinite;
+        }
+
+        @keyframes blinker {
+            50% { opacity: 0.8; }
+        }
+
+        .status-dot {
+            height: 12px; width: 12px;
+            background-color: #bbb;
+            border-radius: 50%;
+            display: inline-block;
+            margin-left: 10px;
+        }
+        .online { background-color: var(--success-color); box-shadow: 0 0 10px var(--success-color); }
     </style>
 </head>
 <body>
 
-<h1>Nicla Web Client</h1>
-
-<div class="card">
-    <div>
-        <label>WebSocket URL:</label>
-        <input id="wsUrl" type="text" value="" placeholder="ws://PHONE_IP:8090" />
-        <button id="btnConnect">Connect</button>
-        <button id="btnDisconnect" disabled>Disconnect</button>
-        <span id="status">DISCONNECTED</span>
-        <span id="roleBadge">ROLE: -</span>
-    </div>
-    <div class="smallNote">
-        Page served from: <span class="urlText" id="servedFrom"></span>
-    </div>
+<div id="sos-overlay">
+    <h1 style="font-size: 4rem; color: white;">⚠️ SOS EMERGENCY ⚠️</h1>
+    <p style="font-size: 1.8rem;">קריאת מצוקה פעילה מהגייטוואי!</p>
+    <p>בטל את המצב באפליקציה כדי להשתיק</p>
 </div>
 
-<!-- ✅ NEW: Live Audio Card -->
-<div class="card">
-    <h3>Live Audio (LAN)</h3>
-    <p class="smallNote">
-        This plays the live stream from <span class="badge">/live.wav</span>.
-        <br/>
-        Works for multiple clients on the same network. You can also copy the same URL and open it in VLC.
-    </p>
+<div class="container">
+    <h1>לוח בקרה מרחוק</h1>
+    <p>סטטוס חיבור לגייטוואי: <span id="connection-status">מתחבר...</span> <span id="dot" class="status-dot"></span></p>
 
-    <div>
-        <button id="btnLiveStart">Play Live</button>
-        <button id="btnLiveStop" disabled>Stop</button>
-        <button id="btnCopyLiveUrl">Copy VLC URL</button>
-        <span class="urlText" id="liveUrlText"></span>
+    <div class="controls-grid">
+        <button class="btn-action" onclick="sendCommand('RECORD_START')">Nicla: התחל הקלטה</button>
+        <button class="btn-stop" onclick="sendCommand('RECORD_STOP')">Nicla: עצור הקלטה</button>
+
+        <button class="btn-action" onclick="sendCommand('GAIN_UP')">הגבר מיקרופון (+)</button>
+        <button class="btn-action" onclick="sendCommand('GAIN_DOWN')">הנמך מיקרופון (-)</button>
+
+        <button class="btn-wide" onclick="sendCommand('STREAM_START')">הפעל הזרמת אודיו בשידור חי</button>
+        <button class="btn-stop" style="grid-column: span 2; margin-top: -10px;" onclick="sendCommand('STREAM_STOP')">עצור הזרמה</button>
     </div>
 
-    <audio id="liveAudio" controls></audio>
-
-    <p class="smallNote">
-        If you opened this page locally (file://), make sure WS URL is set (ws://PHONE_IP:8090) so we can derive PHONE_IP.
-    </p>
+    <p style="font-size: 0.85rem; color: #777;">Gateway IP: 100.94.136.73 | Tailscale Connected</p>
 </div>
 
-<div class="card">
-    <h3>Recording controls</h3>
-    <p>
-        <button id="btnStartRec" disabled>Start recording (OWNER only)</button>
-        <button id="btnStopRec" disabled>Stop recording (OWNER only)</button>
-    </p>
-    <p>
-        <button id="btnRefreshList" disabled>Refresh recordings list</button>
-    </p>
-    <p class="smallNote">
-        * Multiple browsers can connect. Only the first browser is <b>OWNER</b>.
-    </p>
-</div>
-
-<div class="card">
-    <h3>Incoming messages</h3>
-    <textarea id="log" readonly></textarea>
-</div>
-
-<div class="card">
-    <h3>Recordings</h3>
-    <p class="smallNote">
-        * הרשימה מתעדכנת מהודעת <span class="badge">REC_LIST</span>.
-        <br/>
-        * לניגון יציב ב-VLC במחשב: עדיף להשתמש ב-URL של <span class="badge">/media/audio/&lt;id&gt;</span>
-    </p>
-
-    <table>
-        <thead>
-        <tr>
-            <th>File</th>
-            <th>Date &amp; time</th>
-            <th>Duration</th>
-            <th>Size</th>
-            <th>VLC</th>
-        </tr>
-        </thead>
-        <tbody id="recordingsBody"></tbody>
-    </table>
-</div>
+<audio id="alarm-sound" loop>
+    <source src="https://www.soundjay.com/buttons/sounds/beep-01a.mp3" type="audio/mpeg">
+</audio>
 
 <script>
-    let socket = null;
-    let recordings = [];
-    let myRole = "UNKNOWN";
+    const GATEWAY_IP = "100.94.136.73";
+    const HTTP_PORT = "8081";
+    const WS_PORT = "8090";
 
-    const wsUrlEl = document.getElementById('wsUrl');
-    const btnConnect = document.getElementById('btnConnect');
-    const btnDisconnect = document.getElementById('btnDisconnect');
-    const btnStartRec = document.getElementById('btnStartRec');
-    const btnStopRec = document.getElementById('btnStopRec');
-    const btnRefreshList = document.getElementById('btnRefreshList');
-    const statusSpan = document.getElementById('status');
-    const roleBadge = document.getElementById('roleBadge');
-    const logArea = document.getElementById('log');
-    const recordingsBody = document.getElementById('recordingsBody');
-    const servedFrom = document.getElementById('servedFrom');
+    const alarm = document.getElementById('alarm-sound');
+    let socket;
 
-    // Live audio UI
-    const btnLiveStart = document.getElementById('btnLiveStart');
-    const btnLiveStop = document.getElementById('btnLiveStop');
-    const btnCopyLiveUrl = document.getElementById('btnCopyLiveUrl');
-    const liveAudio = document.getElementById('liveAudio');
-    const liveUrlText = document.getElementById('liveUrlText');
+    // חיבור WebSocket לקבלת SOS וביטול SOS בזמן אמת
+    function connectWebSocket() {
+        socket = new WebSocket(`ws://${GATEWAY_IP}:${WS_PORT}`);
 
-    function log(msg) {
-      const now = new Date().toISOString().substr(11, 8);
-      logArea.value += `[${now}] ${msg}\n`;
-      logArea.scrollTop = logArea.scrollHeight;
-    }
+        socket.onopen = () => {
+            console.log("WebSocket Connected");
+            updateUI(true, "מחובר (זמן אמת)");
+        };
 
-    function setConnected(connected) {
-      btnConnect.disabled = connected;
-      btnDisconnect.disabled = !connected;
-      btnRefreshList.disabled = !connected;
+        socket.onmessage = (event) => {
+            const message = event.data;
+            console.log("Gateway Log:", message);
 
-      const isOwner = connected && (myRole === "OWNER");
-      btnStartRec.disabled = !isOwner;
-      btnStopRec.disabled = !isOwner;
-
-      statusSpan.textContent = connected ? 'CONNECTED' : 'DISCONNECTED';
-      statusSpan.style.color = connected ? 'green' : 'red';
-    }
-
-    function setRole(role) {
-      myRole = role || "UNKNOWN";
-      roleBadge.textContent = `ROLE: ${myRole}`;
-      roleBadge.style.background = (myRole === "OWNER") ? "#c8e6c9" : "#eee";
-      setConnected(socket && socket.readyState === WebSocket.OPEN);
-    }
-
-    function sendWs(msg) {
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(msg);
-        log('>> ' + msg);
-      } else {
-        alert('Not connected');
-      }
-    }
-
-    function httpBase() {
-      // If page is served from phone gateway - best
-      if (location.hostname && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
-        const port = location.port || "8081";
-        return `${location.protocol}//${location.hostname}:${port}`;
-      }
-      // Opened locally -> derive from WS URL
-      try {
-        const u = new URL(wsUrlEl.value.trim()); // ws://PHONE_IP:8090
-        return `http://${u.hostname}:8081`;
-      } catch (e) {
-        return null;
-      }
-    }
-
-    function wsUrlDefault() {
-      if (location.hostname && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
-        return `ws://${location.hostname}:8090`;
-      }
-      return "";
-    }
-
-    function copyToClipboard(text) {
-      navigator.clipboard.writeText(text).then(() => {
-        log("Copied URL: " + text);
-      }).catch(err => {
-        log("Clipboard error: " + err);
-        alert("Copy failed. URL:\n" + text);
-      });
-    }
-
-    function updateLiveUrlUi() {
-      const base = httpBase();
-      const liveUrl = base ? `${base}/live.wav` : "";
-      liveUrlText.textContent = liveUrl || "(set WS URL first)";
-      btnCopyLiveUrl.disabled = !liveUrl;
-      btnLiveStart.disabled = !liveUrl;
-      return liveUrl;
-    }
-
-    function startLive() {
-      const liveUrl = updateLiveUrlUi();
-      if (!liveUrl) { alert("Cannot build live URL. Enter WS URL first."); return; }
-
-      // Reset audio element to force reconnect
-      liveAudio.pause();
-      liveAudio.src = liveUrl + `?t=${Date.now()}`; // bypass caches
-      liveAudio.play().then(() => {
-        log("Live audio playing: " + liveAudio.src);
-        btnLiveStart.disabled = true;
-        btnLiveStop.disabled = false;
-      }).catch(err => {
-        log("Live play error: " + err);
-        alert("Live audio failed. Check network, /live.wav, and that audio is being streamed.");
-      });
-    }
-
-    function stopLive() {
-      liveAudio.pause();
-      liveAudio.removeAttribute('src');
-      liveAudio.load();
-      btnLiveStart.disabled = false;
-      btnLiveStop.disabled = true;
-      log("Live audio stopped");
-    }
-
-    // WS connect
-    btnConnect.onclick = function () {
-      const url = wsUrlEl.value.trim();
-      if (!url) { alert('Please enter WebSocket URL (ws://PHONE_IP:8090)'); return; }
-
-      log("Connecting WS -> " + url);
-      socket = new WebSocket(url);
-
-      socket.onopen = function () {
-        log('WS CONNECTED');
-        setRole("UNKNOWN");
-        setConnected(true);
-        sendWs('WEB:HELLO');
-        sendWs('WEB:REQ_RECORDINGS');
-        updateLiveUrlUi();
-      };
-
-      socket.onclose = function (ev) {
-        log('WS DISCONNECTED code=' + ev.code + ' reason=' + (ev.reason || ''));
-        setRole("UNKNOWN");
-        setConnected(false);
-      };
-
-      socket.onerror = function () {
-        log('WS ERROR (check URL / network / port)');
-      };
-
-      socket.onmessage = function (event) {
-        const data = String(event.data || '');
-        log('<< ' + data);
-
-        if (data.startsWith("ROLE:")) {
-          setRole(data.substring("ROLE:".length).trim());
-          return;
-        }
-
-        if (data.startsWith('REC_LIST:')) {
-          const jsonPart = data.substring('REC_LIST:'.length);
-          try {
-            const arr = JSON.parse(jsonPart);
-            if (Array.isArray(arr)) {
-              recordings = arr;
-              renderRecordings();
+            if (message === "ALARM:SOS_ACTIVE") {
+                triggerSOS();
             }
-          } catch (e) {
-            log('Failed to parse REC_LIST JSON: ' + e);
-          }
-          return;
-        }
-      };
-    };
+            else if (message === "ALARM:SOS_OFF") {
+                console.log("SOS Cancelled from Phone");
+                dismissSOS();
+            }
+        };
 
-    btnDisconnect.onclick = function () {
-      if (socket) { socket.close(); socket = null; }
-      setRole("UNKNOWN");
-      setConnected(false);
-      stopLive();
-    };
-
-    btnStartRec.onclick = function () { sendWs('WEB:CMD_START_REC'); };
-    btnStopRec.onclick = function () { sendWs('WEB:CMD_STOP_REC'); };
-    btnRefreshList.onclick = function () { sendWs('WEB:REQ_RECORDINGS'); };
-
-    btnLiveStart.onclick = startLive;
-    btnLiveStop.onclick = stopLive;
-    btnCopyLiveUrl.onclick = function () {
-      const liveUrl = updateLiveUrlUi();
-      if (liveUrl) copyToClipboard(liveUrl);
-    };
-
-    wsUrlEl.addEventListener('input', function () {
-      updateLiveUrlUi();
-    });
-
-    function formatBytes(bytes) {
-      if (bytes == null) return '-';
-      const b = Number(bytes);
-      if (b < 1024) return b + ' B';
-      const kb = b / 1024;
-      if (kb < 1024) return kb.toFixed(1) + ' KB';
-      const mb = kb / 1024;
-      return mb.toFixed(1) + ' MB';
+        socket.onclose = () => {
+            updateUI(false, "מנסה להתחבר מחדש...");
+            setTimeout(connectWebSocket, 3000);
+        };
     }
 
-    function formatDuration(sec) {
-      if (sec == null) return '-';
-      const s = Math.round(sec);
-      const m = Math.floor(s / 60);
-      const r = s % 60;
-      return m + ':' + String(r).padStart(2, '0');
+    // שליחת פקודות לגייטוואי (שמעביר אותן לניקלה)
+    function sendCommand(action) {
+        console.log("Sending command to Nicla:", action);
+        fetch(`http://${GATEWAY_IP}:${HTTP_PORT}/command?type=${action}`)
+            .then(res => console.log("Gateway received command"))
+            .catch(err => console.error("Network error sending command"));
     }
 
-    function renderRecordings() {
-      recordingsBody.innerHTML = '';
-
-      if (!recordings || recordings.length === 0) {
-        const tr = document.createElement('tr');
-        const td = document.createElement('td');
-        td.colSpan = 5;
-        td.textContent = 'No recordings yet';
-        tr.appendChild(td);
-        recordingsBody.appendChild(tr);
-        return;
-      }
-
-      const base = httpBase();
-      if (!base) {
-        const tr = document.createElement('tr');
-        const td = document.createElement('td');
-        td.colSpan = 5;
-        td.textContent = 'Cannot build HTTP URL. Enter a valid ws://PHONE_IP:8090 first.';
-        tr.appendChild(td);
-        recordingsBody.appendChild(tr);
-        return;
-      }
-
-      recordings.forEach(function (rec) {
-        const tr = document.createElement('tr');
-
-        const tdName = document.createElement('td');
-        tdName.textContent = rec.name || rec.id || '(unknown)';
-        tr.appendChild(tdName);
-
-        const tdTime = document.createElement('td');
-        tdTime.textContent = rec.timestamp ? new Date(rec.timestamp).toLocaleString() : '-';
-        tr.appendChild(tdTime);
-
-        const tdDur = document.createElement('td');
-        tdDur.textContent = formatDuration(rec.durationSec);
-        tr.appendChild(tdDur);
-
-        const tdSize = document.createElement('td');
-        tdSize.textContent = formatBytes(rec.sizeBytes);
-        tr.appendChild(tdSize);
-
-        const tdActions = document.createElement('td');
-
-        const recKey = encodeURIComponent(rec.id || rec.name || "");
-        const mediaUrl = `${httpBase()}/media/audio/${recKey}`;
-
-        const btnCopy = document.createElement('button');
-        btnCopy.textContent = 'Copy Media URL';
-        btnCopy.onclick = function () { copyToClipboard(mediaUrl); };
-        tdActions.appendChild(btnCopy);
-
-        const span = document.createElement('span');
-        span.className = 'urlText';
-        span.style.marginLeft = '8px';
-        span.textContent = mediaUrl;
-        tdActions.appendChild(span);
-
-        tr.appendChild(tdActions);
-        recordingsBody.appendChild(tr);
-      });
+    // Polling כגיבוי לסטטוס
+    function checkStatus() {
+        fetch(`http://${GATEWAY_IP}:${HTTP_PORT}/status`)
+            .then(res => res.json())
+            .then(data => {
+                if (data.sosActive) triggerSOS();
+                else dismissSOS();
+            })
+            .catch(err => console.log("Status check failed"));
     }
 
-    servedFrom.textContent = location.href;
-    wsUrlEl.value = wsUrlDefault();
-    setRole("UNKNOWN");
-    setConnected(false);
-    updateLiveUrlUi();
-    renderRecordings();
+    function triggerSOS() {
+        document.getElementById('sos-overlay').style.display = 'flex';
+        alarm.play().catch(e => console.warn("Audio blocked - click on page to enable sounds"));
+    }
+
+    function dismissSOS() {
+        document.getElementById('sos-overlay').style.display = 'none';
+        alarm.pause();
+        alarm.currentTime = 0;
+    }
+
+    function updateUI(isOnline, text) {
+        document.getElementById('connection-status').innerText = text;
+        const dot = document.getElementById('dot');
+        if (isOnline) dot.classList.add('online');
+        else dot.classList.remove('online');
+    }
+
+    // אתחול
+    connectWebSocket();
+    setInterval(checkStatus, 5000);
 </script>
-
 </body>
 </html>

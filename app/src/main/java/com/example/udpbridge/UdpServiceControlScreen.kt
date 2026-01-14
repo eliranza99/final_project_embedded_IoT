@@ -16,7 +16,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 
-// הגדרת מצבי השליטה ההיברידית
 enum class ControlMedium { WIFI, BLE }
 
 @Composable
@@ -34,10 +33,18 @@ fun UdpServiceControlScreen(
     val context = LocalContext.current
 
     var isRunning by remember { mutableStateOf(false) }
-    var controlMedium by remember { mutableStateOf(ControlMedium.WIFI) } // ברירת מחדל WIFI
+    var controlMedium by remember { mutableStateOf(ControlMedium.WIFI) }
+    var showCancelConfirmation by remember { mutableStateOf(false) }
 
     val lastMsg by UdpSharedState.lastMessage.collectAsState()
     val lastRecKey by UdpSharedState.lastReceivedRecordingKey.collectAsState()
+
+    // זיהוי מצב SOS
+    val isSosActive = lastMsg.contains("EMERGENCY") || lastMsg.contains("SOS RECEIVED")
+
+    LaunchedEffect(isSosActive) {
+        if (!isSosActive) showCancelConfirmation = false
+    }
 
     var showNetworkConfig by remember { mutableStateOf(false) }
 
@@ -52,53 +59,35 @@ fun UdpServiceControlScreen(
     val currentWsPort = wsPortText.toIntOrNull() ?: initialWebSocketPort
     val currentHttpPort = httpPortText.toIntOrNull() ?: initialHttpPort
 
-    fun httpBase(): String = "http://$deviceIp:$currentHttpPort"
-
     fun toast(msg: String) {
         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }
 
-    // מימוש פונקציית השליטה ההיברידית המלאה
+    // פונקציית שליחה חכמה - SOS תמיד נשלח לווב
     fun sendHybridCommand(asciiCommand: String) {
+        // 1. הפצה מיידית ל-WebSocket (עבור ה-Dashboard)
+        if (asciiCommand == UdpCommandClient.Commands.SOS || asciiCommand == "!") {
+            UdpSharedState.update("EMERGENCY: SOS RECEIVED")
+            WebSocketServerManager.broadcast("ALARM:SOS_ACTIVE")
+        } else if (asciiCommand == "CANCEL_SOS") {
+            UdpSharedState.update("NORMAL: SOS CLEARED")
+            WebSocketServerManager.broadcast("ALARM:SOS_OFF")
+        }
+
+        // 2. שליחה למכשיר הניקלה (אם הוגדר IP)
         if (controlMedium == ControlMedium.WIFI) {
             val ip = remoteIpText.trim()
             val port = remotePortText.toIntOrNull()
-            if (ip.isEmpty() || port == null) {
-                toast("Configure Remote IP/Port first")
-                return
+
+            if (ip.isNotEmpty() && port != null) {
+                NetworkConfigState.updateRemoteDevice(ip, port)
+                UdpCommandClient.sendAsciiCommand(ip, port, asciiCommand)
+            } else if (asciiCommand != "!" && asciiCommand != "CANCEL_SOS") {
+                toast("Nicla IP/Port not set")
             }
-            NetworkConfigState.updateRemoteDevice(ip, port)
-            // שליחה ב-WiFi (UDP) ללא Secret Key
-            UdpCommandClient.sendAsciiCommand(ip, port, asciiCommand)
         } else {
-            // שליחה ב-BLE דרך ה-BleManager החדש
             BleManager.sendAsciiCommand(asciiCommand)
-            toast("Command '$asciiCommand' sent via BLE")
         }
-    }
-
-    fun openInVlc(url: String) {
-        val uri = Uri.parse(url)
-        val vlcIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "audio/*")
-            setPackage("org.videolan.vlc")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        try {
-            context.startActivity(vlcIntent)
-        } catch (_: Exception) {
-            val chooser = Intent.createChooser(vlcIntent, "Open with")
-            context.startActivity(chooser)
-        }
-    }
-
-    fun openLastReceivedWavInVlc() {
-        val key = lastRecKey?.trim().orEmpty()
-        if (key.isEmpty()) {
-            toast("No received recording yet")
-            return
-        }
-        openInVlc("${httpBase()}/media/audio/$key")
     }
 
     Column(
@@ -108,8 +97,8 @@ fun UdpServiceControlScreen(
         Text("IoT Hybrid Gateway", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(10.dp))
 
-        // בחירת ערוץ שליטה (WiFi / BLE)
-        Text("Control Medium Selection:", style = MaterialTheme.typography.titleMedium)
+        // בחירת ערוץ תקשורת
+        Text("Control Medium:", style = MaterialTheme.typography.titleMedium)
         Row(verticalAlignment = Alignment.CenterVertically) {
             RadioButton(selected = controlMedium == ControlMedium.WIFI, onClick = { controlMedium = ControlMedium.WIFI })
             Text("WiFi (UDP)")
@@ -120,22 +109,44 @@ fun UdpServiceControlScreen(
 
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
-        // כפתור SOS בולט - פקודת '!'
-        Button(
-            onClick = { sendHybridCommand(UdpCommandClient.Commands.SOS) },
-            colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
-            modifier = Modifier.fillMaxWidth().height(60.dp),
-            enabled = isRunning
-        ) {
-            Icon(Icons.Default.Warning, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("SEND SOS SIGNAL")
+        // SOS Button Logic
+        if (!isSosActive) {
+            Button(
+                onClick = { sendHybridCommand(UdpCommandClient.Commands.SOS) },
+                colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
+                modifier = Modifier.fillMaxWidth().height(65.dp),
+                enabled = isRunning
+            ) {
+                Icon(Icons.Default.Warning, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("SEND SOS SIGNAL")
+            }
+        } else {
+            if (!showCancelConfirmation) {
+                Button(
+                    onClick = { showCancelConfirmation = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF9C27B0)), // Purple
+                    modifier = Modifier.fillMaxWidth().height(65.dp)
+                ) {
+                    Text("CANCEL SOS SIGNAL")
+                }
+            } else {
+                Button(
+                    onClick = {
+                        sendHybridCommand("CANCEL_SOS")
+                        showCancelConfirmation = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800)), // Orange
+                    modifier = Modifier.fillMaxWidth().height(65.dp)
+                ) {
+                    Text("CONFIRM CANCEL?")
+                }
+            }
         }
 
         Spacer(Modifier.height(16.dp))
 
-        // בקרת הגבר (Gain) - פקודות 'U' ו-'D'
-        Text("Microphone Gain Control", style = MaterialTheme.typography.titleMedium)
+        Text("Nicla Controls", style = MaterialTheme.typography.titleMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             Button(onClick = { sendHybridCommand(UdpCommandClient.Commands.GAIN_UP) }, enabled = isRunning) {
                 Text("Gain Up (+)")
@@ -145,10 +156,8 @@ fun UdpServiceControlScreen(
             }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(8.dp))
 
-        // בקרת הקלטה וסטרימינג - פקודות ASCII
-        Text("Recording & Streaming", style = MaterialTheme.typography.titleMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(onClick = { sendHybridCommand(UdpCommandClient.Commands.RECORD_START) }, enabled = isRunning) {
                 Text("Rec Start")
@@ -157,30 +166,17 @@ fun UdpServiceControlScreen(
                 Text("Rec Stop")
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 8.dp)) {
-            Button(onClick = { sendHybridCommand(UdpCommandClient.Commands.STREAM_START) }, enabled = isRunning) {
-                Text("Stream Start")
-            }
-            OutlinedButton(onClick = { sendHybridCommand(UdpCommandClient.Commands.STREAM_STOP) }, enabled = isRunning) {
-                Text("Stream Stop")
-            }
-        }
 
         HorizontalDivider(Modifier.padding(vertical = 18.dp))
 
         Text("Last message received:", style = MaterialTheme.typography.titleMedium)
         Text(lastMsg, style = MaterialTheme.typography.bodyLarge)
 
-        Spacer(Modifier.height(12.dp))
-
-        Button(onClick = { openLastReceivedWavInVlc() }, enabled = (lastRecKey != null)) {
-            Text("Play last received WAV (VLC)")
-        }
-
         Spacer(Modifier.height(18.dp))
 
+        // קנפוג IP ופורט לניקלה
         OutlinedButton(onClick = { showNetworkConfig = !showNetworkConfig }) {
-            Text(if (showNetworkConfig) "Hide Config" else "Show Network Config")
+            Text(if (showNetworkConfig) "Hide Config" else "Show Nicla Config")
         }
 
         if (showNetworkConfig) {
@@ -189,27 +185,24 @@ fun UdpServiceControlScreen(
                 modifier = Modifier.fillMaxWidth(),
                 value = remoteIpText,
                 onValueChange = { remoteIpText = it },
-                label = { Text("Remote Device IP (for WiFi)") }
+                label = { Text("Nicla IP Address") }
             )
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 modifier = Modifier.fillMaxWidth(),
                 value = remotePortText,
                 onValueChange = { remotePortText = it },
-                label = { Text("Remote UDP Port") }
+                label = { Text("Nicla UDP Port") }
             )
             Spacer(Modifier.height(12.dp))
-            Text("Local Gateway Ports: UDP:$currentUdpPort | WS:$currentWsPort | HTTP:$currentHttpPort")
+            Text("Local Status: UDP:$currentUdpPort | WS:$currentWsPort | HTTP:$currentHttpPort", style = MaterialTheme.typography.bodySmall)
         }
 
         Spacer(Modifier.height(24.dp))
 
         Button(
             modifier = Modifier.fillMaxWidth(),
-            onClick = {
-                onStart(currentUdpPort, currentWsPort, currentHttpPort)
-                isRunning = true
-            },
+            onClick = { onStart(currentUdpPort, currentWsPort, currentHttpPort); isRunning = true },
             enabled = !isRunning
         ) { Text("START GATEWAY SERVICE") }
 
