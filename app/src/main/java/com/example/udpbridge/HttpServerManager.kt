@@ -1,7 +1,9 @@
 package com.example.udpbridge
 
+import android.net.Uri
 import android.util.Log
 import fi.iki.elonen.NanoHTTPD
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.*
 import java.net.URLDecoder
@@ -18,9 +20,10 @@ object HttpServerManager {
         stop()
 
         val s = GatewayHttpServer(port, filesDir)
-        s.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
+        s.start(NanoHTTPD.SOCKET_READ_TIMEOUT, true) // Multi-threaded
+
         server = s
-        Log.i(TAG, "HTTP server started on port $port")
+        Log.i(TAG, "HTTP server started on port $port (Multi-threaded mode)")
     }
 
     fun stop() {
@@ -38,21 +41,18 @@ object HttpServerManager {
             val uri = session.uri ?: "/"
             val method = session.method?.name ?: "GET"
 
-            // 1. CORS Preflight
             if (method == "OPTIONS") {
                 return newFixedLengthResponse(Response.Status.OK, "text/plain; charset=utf-8", "")
                     .also { addCors(it) }
             }
 
-            // 2. Serve Web Dashboard
             if (method == "GET" && (uri == "/" || uri == "/index.html")) {
                 return serveAssetText("web/index.html", "text/html; charset=utf-8")
             }
 
-            // 3. Command API (Remote Control for Nicla)
             if (method == "GET" && uri == "/command") {
                 val params = session.parameters
-                val action = params["type"]?.firstOrNull() ?: ""
+                val action = params["val"]?.firstOrNull() ?: params["type"]?.firstOrNull() ?: ""
 
                 val commandToSend = when(action) {
                     "RECORD_START" -> UdpCommandClient.Commands.RECORD_START
@@ -65,33 +65,40 @@ object HttpServerManager {
                     else           -> action
                 }
 
-                UdpCommandClient.sendAsciiCommand(
-                    NetworkConfigState.remoteDeviceIp,
-                    NetworkConfigState.remoteUdpPort,
-                    commandToSend
-                )
+                if (commandToSend.isNotEmpty()) {
+                    UdpCommandClient.sendAsciiCommand(
+                        NetworkConfigState.remoteDeviceIp,
+                        NetworkConfigState.remoteUdpPort,
+                        commandToSend
+                    )
+                    WebSocketServerManager.broadcast("APP_EVENT:$commandToSend")
+                }
+
                 return newFixedLengthResponse(Response.Status.OK, "text/plain", "OK: $commandToSend")
                     .also { addCors(it) }
             }
 
-            // 4. Status API (Polling with SOS fix)
+            // ✅ Status API המעודכן עם זמן ותאריך לכל אירוע
             if (method == "GET" && uri == "/status") {
-                val lastMsg = UdpSharedState.lastMessage.value
-                // תיקון הלופ: SOS פעיל רק אם ההודעה מכילה SOS ולא מכילה CLEARED
-                val isSosActive = (lastMsg.contains("SOS") || lastMsg.contains("EMERGENCY") || lastMsg.trim() == "!")
-                        && !lastMsg.contains("CLEARED")
-
                 val json = JSONObject().apply {
-                    put("sosActive", isSosActive)
-                    put("lastMessage", lastMsg)
+                    put("sosActive", UdpSharedState.isSosActive.value)
+                    put("lastMessage", UdpSharedState.lastMessage.value)
                     put("deviceIp", NetworkConfigState.deviceIp)
+
+                    val historyArray = JSONArray()
+                    UdpSharedState.getHistory().forEach { record ->
+                        val item = JSONObject()
+                        item.put("msg", record.message)
+                        item.put("time", record.timestamp)
+                        historyArray.put(item)
+                    }
+                    put("history", historyArray)
                 }
 
                 return newFixedLengthResponse(Response.Status.OK, "application/json", json.toString())
                     .also { addCors(it) }
             }
 
-            // 5. LIVE Audio Stream (WAV) - החלק שהיה חסר!
             if (method == "GET" && uri == "/live.wav") {
                 val sampleRate = NetworkConfigState.audioSampleRateHz
                 val header = wavStreamingHeader(sampleRate, 1, 16)
@@ -105,7 +112,6 @@ object HttpServerManager {
                 }
             }
 
-            // 6. Config JSON
             if (method == "GET" && uri == "/config.json") {
                 val obj = JSONObject().apply {
                     put("httpPort", port)
@@ -134,7 +140,7 @@ object HttpServerManager {
             val blockAlign = channels * (bitsPerSample / 8)
             val bb = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
             bb.put("RIFF".toByteArray())
-            bb.putInt(-1) // Unknown length for live stream
+            bb.putInt(-1)
             bb.put("WAVE".toByteArray())
             bb.put("fmt ".toByteArray())
             bb.putInt(16)

@@ -9,7 +9,6 @@
             --primary-color: #2196F3;
             --danger-color: #f44336;
             --success-color: #4CAF50;
-            --warning-color: #ff9800;
         }
 
         body {
@@ -20,6 +19,21 @@
             align-items: center;
             justify-content: center;
             min-height: 100vh;
+            transition: background-color 0.5s ease;
+            overflow: hidden;
+        }
+
+        #unlock-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(33, 150, 243, 0.95);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            color: white;
+            transition: opacity 0.5s ease;
         }
 
         .container {
@@ -30,6 +44,8 @@
             text-align: center;
             width: 90%;
             max-width: 550px;
+            position: relative;
+            z-index: 10;
         }
 
         h1 { color: #333; margin-bottom: 1.5rem; }
@@ -54,12 +70,19 @@
 
         button:active { transform: scale(0.96); }
 
-        .btn-start { background-color: var(--success-color); }
-        .btn-stop { background-color: var(--danger-color); }
         .btn-action { background-color: var(--primary-color); }
+        .btn-stop { background-color: var(--danger-color); }
         .btn-wide { grid-column: span 2; background-color: #673AB7; }
 
-        /* SOS Overlay */
+        .btn-unlock {
+            background: white;
+            color: var(--primary-color);
+            padding: 20px 50px;
+            font-size: 1.5rem;
+            border-radius: 50px;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        }
+
         #sos-overlay {
             display: none;
             position: fixed;
@@ -73,9 +96,7 @@
             animation: blinker 1s linear infinite;
         }
 
-        @keyframes blinker {
-            50% { opacity: 0.8; }
-        }
+        @keyframes blinker { 50% { opacity: 0.7; } }
 
         .status-dot {
             height: 12px; width: 12px;
@@ -85,114 +106,172 @@
             margin-left: 10px;
         }
         .online { background-color: var(--success-color); box-shadow: 0 0 10px var(--success-color); }
+
+        #event-log {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            font-size: 0.85rem;
+            color: #555;
+            height: 140px;
+            overflow-y: auto;
+            border: 1px solid #eee;
+            text-align: right;
+            line-height: 1.6;
+        }
+
+        .log-entry { border-bottom: 1px solid #eee; padding: 4px 0; }
+        .log-time { color: #2196F3; font-weight: bold; font-size: 0.75rem; margin-left: 8px; }
     </style>
 </head>
 <body>
 
+<div id="unlock-overlay">
+    <h1 style="color: white;">ברוכים הבאים ל-Nicla Control</h1>
+    <p style="font-size: 1.2rem; margin-bottom: 2rem;">לחץ על הכפתור כדי להתחבר ולהפעיל התראות קוליות</p>
+    <button class="btn-unlock" onclick="unlockAudioAndConnect()">התחבר למערכת 🔗</button>
+</div>
+
 <div id="sos-overlay">
     <h1 style="font-size: 4rem; color: white;">⚠️ SOS EMERGENCY ⚠️</h1>
     <p style="font-size: 1.8rem;">קריאת מצוקה פעילה מהגייטוואי!</p>
-    <p>בטל את המצב באפליקציה כדי להשתיק</p>
+    <button class="btn-stop" style="background: white; color: red; padding: 10px 40px; border-radius: 50px;" onclick="sendCommand('CANCEL_SOS')">השתק וביטול מצב חירום</button>
 </div>
 
-<div class="container">
+<div class="container" id="mainCard">
     <h1>לוח בקרה מרחוק</h1>
-    <p>סטטוס חיבור לגייטוואי: <span id="connection-status">מתחבר...</span> <span id="dot" class="status-dot"></span></p>
+    <p>סטטוס חיבור: <span id="connection-status">ממתין להתחברות...</span> <span id="dot" class="status-dot"></span></p>
 
     <div class="controls-grid">
-        <button class="btn-action" onclick="sendCommand('RECORD_START')">Nicla: התחל הקלטה</button>
-        <button class="btn-stop" onclick="sendCommand('RECORD_STOP')">Nicla: עצור הקלטה</button>
-
-        <button class="btn-action" onclick="sendCommand('GAIN_UP')">הגבר מיקרופון (+)</button>
-        <button class="btn-action" onclick="sendCommand('GAIN_DOWN')">הנמך מיקרופון (-)</button>
-
-        <button class="btn-wide" onclick="sendCommand('STREAM_START')">הפעל הזרמת אודיו בשידור חי</button>
-        <button class="btn-stop" style="grid-column: span 2; margin-top: -10px;" onclick="sendCommand('STREAM_STOP')">עצור הזרמה</button>
+        <button class="btn-action" onclick="sendCommand('R')">Nicla: התחל הקלטה</button>
+        <button class="btn-stop" onclick="sendCommand('S')">Nicla: עצור הקלטה</button>
+        <button class="btn-action" onclick="sendCommand('U')">הגבר מיקרופון (+)</button>
+        <button class="btn-action" onclick="sendCommand('D')">הנמך מיקרופון (-)</button>
+        <button class="btn-wide" onclick="window.open('rtsp://100.99.61.119:8554/live')">צפה בשידור חי (RTSP)</button>
     </div>
 
-    <p style="font-size: 0.85rem; color: #777;">Gateway IP: 100.94.136.73 | Tailscale Connected</p>
+    <div id="event-log">ממתין לעדכונים מהאפליקציה...</div>
+    <p style="font-size: 0.8rem; color: #777; margin-top: 15px;">מחובר ל-Gateway: 100.99.61.119</p>
 </div>
 
-<audio id="alarm-sound" loop>
+<audio id="alarm-sound" preload="auto" loop>
     <source src="https://www.soundjay.com/buttons/sounds/beep-01a.mp3" type="audio/mpeg">
 </audio>
 
 <script>
-    const GATEWAY_IP = "100.94.136.73";
+    const GATEWAY_IP = "100.99.61.119";
     const HTTP_PORT = "8081";
     const WS_PORT = "8090";
 
     const alarm = document.getElementById('alarm-sound');
+    const log = document.getElementById('event-log');
     let socket;
+    let isUnlocked = false;
 
-    // חיבור WebSocket לקבלת SOS וביטול SOS בזמן אמת
+    function unlockAudioAndConnect() {
+        alarm.play().then(() => {
+            alarm.pause();
+            alarm.currentTime = 0;
+            isUnlocked = true;
+            console.log("Audio Unlocked!");
+        }).catch(e => console.error("Audio unlock failed", e));
+
+        document.getElementById('unlock-overlay').style.opacity = '0';
+        setTimeout(() => {
+            document.getElementById('unlock-overlay').style.display = 'none';
+            document.body.style.overflow = 'auto';
+        }, 500);
+
+        syncInitialState();
+        connectWebSocket();
+    }
+
+    async function syncInitialState() {
+        try {
+            const response = await fetch(`http://${GATEWAY_IP}:${HTTP_PORT}/status`);
+            const data = await response.json();
+
+            if (data.sosActive) {
+                triggerSOS();
+                addLog("⚠️ התחברת בזמן שקריאת SOS פעילה!");
+            }
+
+            // ✅ תיקון הסדר: מעבדים מהישן לחדש כדי שהחדש ביותר יתווסף אחרון (ויישאר למעלה)
+            if (data.history && data.history.length > 0) {
+                log.innerHTML = "";
+                data.history.slice().reverse().forEach(item => {
+                    const cleanMsg = item.msg.replace("APP_EVENT:", "חיווי מהטלפון: ");
+                    addLog(cleanMsg, item.time);
+                });
+                addLog("📜 נטענה היסטוריית אירועים קודמת");
+            }
+        } catch (err) {
+            addLog("❌ שגיאת סנכרון בחיבור הראשוני");
+        }
+    }
+
     function connectWebSocket() {
         socket = new WebSocket(`ws://${GATEWAY_IP}:${WS_PORT}`);
 
         socket.onopen = () => {
-            console.log("WebSocket Connected");
-            updateUI(true, "מחובר (זמן אמת)");
+            updateUI(true, "מחובר לגייטוואי ✅");
+            addLog("🔗 חיבור WebSocket הוקם");
         };
 
         socket.onmessage = (event) => {
             const message = event.data;
-            console.log("Gateway Log:", message);
-
-            if (message === "ALARM:SOS_ACTIVE") {
-                triggerSOS();
-            }
-            else if (message === "ALARM:SOS_OFF") {
-                console.log("SOS Cancelled from Phone");
-                dismissSOS();
+            if (message === "ALARM:SOS_ACTIVE") triggerSOS();
+            else if (message === "ALARM:SOS_OFF") dismissSOS();
+            else if (message.startsWith("APP_EVENT:")) {
+                const cmd = message.split(":")[1];
+                addLog(`📱 חיווי מהטלפון: המשתמש לחץ על ${cmd}`);
             }
         };
 
         socket.onclose = () => {
-            updateUI(false, "מנסה להתחבר מחדש...");
+            updateUI(false, "מתחבר מחדש...");
             setTimeout(connectWebSocket, 3000);
         };
     }
 
-    // שליחת פקודות לגייטוואי (שמעביר אותן לניקלה)
-    function sendCommand(action) {
-        console.log("Sending command to Nicla:", action);
-        fetch(`http://${GATEWAY_IP}:${HTTP_PORT}/command?type=${action}`)
-            .then(res => console.log("Gateway received command"))
-            .catch(err => console.error("Network error sending command"));
-    }
-
-    // Polling כגיבוי לסטטוס
-    function checkStatus() {
-        fetch(`http://${GATEWAY_IP}:${HTTP_PORT}/status`)
-            .then(res => res.json())
-            .then(data => {
-                if (data.sosActive) triggerSOS();
-                else dismissSOS();
-            })
-            .catch(err => console.log("Status check failed"));
+    async function sendCommand(val) {
+        try {
+            await fetch(`http://${GATEWAY_IP}:${HTTP_PORT}/command?val=${val}`);
+            addLog(`📤 נשלחה פקודה: ${val}`);
+        } catch (err) {
+            addLog(`❌ שגיאת תקשורת: ${val}`);
+        }
     }
 
     function triggerSOS() {
         document.getElementById('sos-overlay').style.display = 'flex';
-        alarm.play().catch(e => console.warn("Audio blocked - click on page to enable sounds"));
+        if (isUnlocked) {
+            alarm.play().catch(e => console.log("Playback failed:", e));
+        }
+        addLog("🚨 SOS פעיל!");
     }
 
     function dismissSOS() {
         document.getElementById('sos-overlay').style.display = 'none';
         alarm.pause();
         alarm.currentTime = 0;
+        addLog("✅ SOS בוטל");
     }
 
     function updateUI(isOnline, text) {
         document.getElementById('connection-status').innerText = text;
         const dot = document.getElementById('dot');
-        if (isOnline) dot.classList.add('online');
-        else dot.classList.remove('online');
+        dot.className = "status-dot" + (isOnline ? " online" : "");
     }
 
-    // אתחול
-    connectWebSocket();
-    setInterval(checkStatus, 5000);
+    // ✅ הוספה לראש הרשימה עם תאריך ושעה מלאים
+    function addLog(txt, timestamp = null) {
+        const dateObj = timestamp ? new Date(timestamp) : new Date();
+        const timeStr = dateObj.toLocaleString('he-IL');
+        const entry = `<div class="log-entry"><span class="log-time">[${timeStr}]</span> ${txt}</div>`;
+        log.innerHTML = entry + log.innerHTML;
+    }
 </script>
 </body>
 </html>

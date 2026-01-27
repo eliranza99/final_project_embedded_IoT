@@ -65,13 +65,20 @@ fun UdpServiceControlScreen(
 
     // פונקציית שליחה חכמה - SOS תמיד נשלח לווב
     fun sendHybridCommand(asciiCommand: String) {
-        // 1. הפצה מיידית ל-WebSocket (עבור ה-Dashboard)
-        if (asciiCommand == UdpCommandClient.Commands.SOS || asciiCommand == "!") {
-            UdpSharedState.update("EMERGENCY: SOS RECEIVED")
-            WebSocketServerManager.broadcast("ALARM:SOS_ACTIVE")
-        } else if (asciiCommand == "CANCEL_SOS") {
-            UdpSharedState.update("NORMAL: SOS CLEARED")
-            WebSocketServerManager.broadcast("ALARM:SOS_OFF")
+        // 1. ✅ עדכון: הפצה ל-WebSocket עבור כל סוגי הפקודות (עבור ה-Dashboard)
+        when (asciiCommand) {
+            UdpCommandClient.Commands.SOS, "!" -> {
+                UdpSharedState.update("EMERGENCY: SOS RECEIVED")
+                WebSocketServerManager.broadcast("ALARM:SOS_ACTIVE")
+            }
+            "CANCEL_SOS" -> {
+                UdpSharedState.update("NORMAL: SOS CLEARED")
+                WebSocketServerManager.broadcast("ALARM:SOS_OFF")
+            }
+            else -> {
+                // שידור חיווי ל-Web עבור לחיצות על כוספתורי R, S, U, D
+                WebSocketServerManager.broadcast("APP_EVENT:$asciiCommand")
+            }
         }
 
         // 2. שליחה למכשיר הניקלה (אם הוגדר IP)
